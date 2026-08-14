@@ -1,0 +1,7 @@
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorAgent.java
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorAgentLog.java
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorHooks.java
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorInstrumentationTransformer.java
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorLaunchTransformer.java
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorPatcher.java
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorTweaker.java

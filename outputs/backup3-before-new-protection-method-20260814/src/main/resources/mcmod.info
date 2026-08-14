@@ -1,0 +1,16 @@
+[
+  {
+    "modid": "fireballpredictor",
+    "name": "Fireball Predictor",
+    "description": "Standalone fireball warning and red glass impact predictor.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "url": "",
+    "updateUrl": "",
+    "authorList": ["114514"],
+    "credits": "",
+    "logoFile": "assets/fireballpredictor/icon.png",
+    "screenshots": [],
+    "dependencies": []
+  }
+]
