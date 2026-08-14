@@ -1,22 +1,20 @@
 package com.example.fireballpredictor.share;
 
-import com.sun.net.httpserver.Headers;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
-
-import java.io.ByteArrayOutputStream;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
-import java.net.URLDecoder;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class ShareServer {
@@ -24,12 +22,13 @@ public final class ShareServer {
     private static final String DEFAULT_ROOM = "default";
     private static final long DEFAULT_TTL_MILLIS = 10L * 60L * 1000L;
     private static final int DEFAULT_MAX_SAMPLES_PER_GAME = 600;
-    private static final int MAX_BODY_BYTES = 16 * 1024;
+    private static final int MAX_LINE_CHARS = 32 * 1024;
 
     private final Object lock = new Object();
     private final Map<String, List<Sample>> samplesByGame = new LinkedHashMap<String, List<Sample>>();
     private final long ttlMillis;
     private final int maxSamplesPerGame;
+    private final ExecutorService workers = Executors.newCachedThreadPool();
 
     private ShareServer(long ttlMillis, int maxSamplesPerGame) {
         this.ttlMillis = ttlMillis;
@@ -39,148 +38,155 @@ public final class ShareServer {
     public static void main(String[] args) throws Exception {
         Config config = Config.parse(args);
         ShareServer app = new ShareServer(config.ttlMillis, config.maxSamplesPerGame);
-        HttpServer server = HttpServer.create(new InetSocketAddress(config.host, config.port), 0);
-        server.createContext("/health", new HealthHandler());
-        server.createContext("/v1/push", app.new PushHandler());
-        server.createContext("/v1/pull", app.new PullHandler());
-        server.createContext("/v1/clear", app.new ClearHandler());
-        server.setExecutor(Executors.newCachedThreadPool());
-        server.start();
-        System.out.println("Fireball share server listening on http://" + config.host + ":" + config.port);
-        System.out.println("Endpoints: GET /health, POST /v1/push, GET /v1/pull?room=...&gameId=...");
-    }
-
-    private final class PushHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if (handleCors(exchange)) {
-                return;
-            }
-            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                send(exchange, 405, jsonError("method_not_allowed"));
-                return;
-            }
-            String body = readBody(exchange);
-            if (!looksLikeJsonObject(body)) {
-                send(exchange, 400, jsonError("invalid_json_object"));
-                return;
-            }
-            String room = firstNonEmpty(query(exchange).get("room"), jsonString(body, "room"));
-            String gameId = firstNonEmpty(query(exchange).get("gameId"), jsonString(body, "gameId"));
-            String senderId = firstNonEmpty(query(exchange).get("senderId"), jsonString(body, "senderId"));
-            room = normalizeRoom(room);
-            if (isBlank(gameId)) {
-                send(exchange, 400, jsonError("missing_gameId"));
-                return;
-            }
-
-            long now = System.currentTimeMillis();
-            String key = gameKey(room, gameId);
-            String enriched = enrichJson(body, now);
-            synchronized (lock) {
-                pruneLocked(now);
-                List<Sample> samples = samplesByGame.get(key);
-                if (samples == null) {
-                    samples = new ArrayList<Sample>();
-                    samplesByGame.put(key, samples);
+        ServerSocket server = new ServerSocket();
+        server.bind(new InetSocketAddress(config.host, config.port));
+        System.out.println("Fireball share server listening on tcp://" + config.host + ":" + config.port);
+        System.out.println("Protocol: PING | PUSH <json> | PULL <gameId> [since] [excludeSenderId] [room] | CLEAR [gameId] [room]");
+        while (true) {
+            final Socket socket = server.accept();
+            app.workers.execute(new Runnable() {
+                @Override
+                public void run() {
+                    app.handle(socket);
                 }
-                samples.add(new Sample(now, senderId, enriched));
-                while (samples.size() > maxSamplesPerGame) {
-                    samples.remove(0);
-                }
-            }
-            send(exchange, 200, "{\"ok\":true,\"serverTime\":" + now + "}");
+            });
         }
     }
 
-    private final class PullHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if (handleCors(exchange)) {
+    private void handle(Socket socket) {
+        BufferedReader input = null;
+        BufferedWriter output = null;
+        try {
+            socket.setSoTimeout(8000);
+            input = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            output = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
+            String line = input.readLine();
+            if (line == null) {
+                writeLine(output, jsonError("empty_request"));
                 return;
             }
-            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
-                send(exchange, 405, jsonError("method_not_allowed"));
+            if (line.length() > MAX_LINE_CHARS) {
+                writeLine(output, jsonError("request_too_large"));
                 return;
             }
-            Map<String, String> q = query(exchange);
-            String room = normalizeRoom(q.get("room"));
-            String gameId = q.get("gameId");
-            String sinceText = q.get("since");
-            String excludeSenderId = q.get("excludeSenderId");
-            if (isBlank(gameId)) {
-                send(exchange, 400, jsonError("missing_gameId"));
-                return;
+            writeLine(output, handleLine(stripBom(line).trim()));
+        } catch (Throwable t) {
+            try {
+                if (output != null) {
+                    writeLine(output, jsonError("server_error"));
+                }
+            } catch (IOException ignored) {
             }
-            long since = parseLong(sinceText, 0L);
-            long now = System.currentTimeMillis();
-            List<String> result = new ArrayList<String>();
-            synchronized (lock) {
-                pruneLocked(now);
-                List<Sample> samples = samplesByGame.get(gameKey(room, gameId));
-                if (samples != null) {
-                    for (Sample sample : samples) {
-                        if (sample.serverTime <= since) {
-                            continue;
-                        }
-                        if (!isBlank(excludeSenderId) && excludeSenderId.equals(sample.senderId)) {
-                            continue;
-                        }
-                        result.add(sample.json);
+        } finally {
+            closeQuietly(input);
+            closeQuietly(output);
+            closeQuietly(socket);
+        }
+    }
+
+    private String handleLine(String line) {
+        if (line.length() == 0) {
+            return jsonError("empty_request");
+        }
+        if ("PING".equalsIgnoreCase(line)) {
+            return "{\"ok\":true,\"name\":\"fireball-share-server\",\"protocol\":\"tcp\"}";
+        }
+        if (startsWithCommand(line, "PUSH")) {
+            return handlePush(commandPayload(line, "PUSH"));
+        }
+        if (startsWithCommand(line, "PULL")) {
+            return handlePull(commandParts(line, "PULL"));
+        }
+        if (startsWithCommand(line, "CLEAR")) {
+            return handleClear(commandParts(line, "CLEAR"));
+        }
+        return jsonError("unknown_command");
+    }
+
+    private String handlePush(String body) {
+        if (!looksLikeJsonObject(body)) {
+            return jsonError("invalid_json_object");
+        }
+        String room = normalizeRoom(jsonString(body, "room"));
+        String gameId = jsonString(body, "gameId");
+        String senderId = jsonString(body, "senderId");
+        if (isBlank(gameId)) {
+            return jsonError("missing_gameId");
+        }
+
+        long now = System.currentTimeMillis();
+        String key = gameKey(room, gameId);
+        String enriched = enrichJson(body, now);
+        synchronized (lock) {
+            pruneLocked(now);
+            List<Sample> samples = samplesByGame.get(key);
+            if (samples == null) {
+                samples = new ArrayList<Sample>();
+                samplesByGame.put(key, samples);
+            }
+            samples.add(new Sample(now, senderId, enriched));
+            while (samples.size() > maxSamplesPerGame) {
+                samples.remove(0);
+            }
+        }
+        return "{\"ok\":true,\"serverTime\":" + now + "}";
+    }
+
+    private String handlePull(String[] parts) {
+        if (parts.length < 1 || isBlank(parts[0])) {
+            return jsonError("missing_gameId");
+        }
+        String gameId = parts[0];
+        long since = parts.length >= 2 ? parseLong(parts[1], 0L) : 0L;
+        String excludeSenderId = parts.length >= 3 ? parts[2] : "";
+        String room = parts.length >= 4 ? normalizeRoom(parts[3]) : DEFAULT_ROOM;
+
+        long now = System.currentTimeMillis();
+        List<String> result = new ArrayList<String>();
+        synchronized (lock) {
+            pruneLocked(now);
+            List<Sample> samples = samplesByGame.get(gameKey(room, gameId));
+            if (samples != null) {
+                for (Sample sample : samples) {
+                    if (sample.serverTime <= since) {
+                        continue;
+                    }
+                    if (!isBlank(excludeSenderId) && excludeSenderId.equals(sample.senderId)) {
+                        continue;
+                    }
+                    result.add(sample.json);
+                }
+            }
+        }
+        StringBuilder json = new StringBuilder();
+        json.append("{\"ok\":true,\"serverTime\":").append(now).append(",\"samples\":[");
+        for (int i = 0; i < result.size(); i++) {
+            if (i > 0) {
+                json.append(',');
+            }
+            json.append(result.get(i));
+        }
+        json.append("]}");
+        return json.toString();
+    }
+
+    private String handleClear(String[] parts) {
+        String gameId = parts.length >= 1 ? parts[0] : "";
+        String room = parts.length >= 2 ? normalizeRoom(parts[1]) : DEFAULT_ROOM;
+        synchronized (lock) {
+            if (!isBlank(room) && !isBlank(gameId)) {
+                samplesByGame.remove(gameKey(room, gameId));
+            } else if (!isBlank(room)) {
+                Iterator<String> iterator = samplesByGame.keySet().iterator();
+                String prefix = room + "|";
+                while (iterator.hasNext()) {
+                    if (iterator.next().startsWith(prefix)) {
+                        iterator.remove();
                     }
                 }
             }
-            StringBuilder json = new StringBuilder();
-            json.append("{\"ok\":true,\"serverTime\":").append(now).append(",\"samples\":[");
-            for (int i = 0; i < result.size(); i++) {
-                if (i > 0) {
-                    json.append(',');
-                }
-                json.append(result.get(i));
-            }
-            json.append("]}");
-            send(exchange, 200, json.toString());
         }
-    }
-
-    private final class ClearHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if (handleCors(exchange)) {
-                return;
-            }
-            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                send(exchange, 405, jsonError("method_not_allowed"));
-                return;
-            }
-            Map<String, String> q = query(exchange);
-            String room = normalizeRoom(q.get("room"));
-            String gameId = q.get("gameId");
-            synchronized (lock) {
-                if (!isBlank(room) && !isBlank(gameId)) {
-                    samplesByGame.remove(gameKey(room, gameId));
-                } else if (!isBlank(room)) {
-                    Iterator<String> iterator = samplesByGame.keySet().iterator();
-                    String prefix = room + "|";
-                    while (iterator.hasNext()) {
-                        if (iterator.next().startsWith(prefix)) {
-                            iterator.remove();
-                        }
-                    }
-                }
-            }
-            send(exchange, 200, "{\"ok\":true}");
-        }
-    }
-
-    private static final class HealthHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if (handleCors(exchange)) {
-                return;
-            }
-            send(exchange, 200, "{\"ok\":true,\"name\":\"fireball-share-server\"}");
-        }
+        return "{\"ok\":true}";
     }
 
     private void pruneLocked(long now) {
@@ -200,63 +206,38 @@ public final class ShareServer {
         }
     }
 
-    private static boolean handleCors(HttpExchange exchange) throws IOException {
-        Headers headers = exchange.getResponseHeaders();
-        headers.set("Access-Control-Allow-Origin", "*");
-        headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-        headers.set("Access-Control-Allow-Headers", "Content-Type");
-        if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
-            exchange.sendResponseHeaders(204, -1);
-            exchange.close();
-            return true;
-        }
-        return false;
+    private static boolean startsWithCommand(String line, String command) {
+        return line.equalsIgnoreCase(command)
+                || line.regionMatches(true, 0, command + " ", 0, command.length() + 1)
+                || line.regionMatches(true, 0, command + "\t", 0, command.length() + 1);
     }
 
-    private static void send(HttpExchange exchange, int status, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        Headers headers = exchange.getResponseHeaders();
-        headers.set("Content-Type", "application/json; charset=utf-8");
-        exchange.sendResponseHeaders(status, bytes.length);
-        OutputStream output = exchange.getResponseBody();
-        try {
-            output.write(bytes);
-        } finally {
-            output.close();
-            exchange.close();
+    private static String stripBom(String text) {
+        if (text != null && text.length() > 0 && text.charAt(0) == '\uFEFF') {
+            return text.substring(1);
         }
+        return text;
     }
 
-    private static String readBody(HttpExchange exchange) throws IOException {
-        InputStream input = exchange.getRequestBody();
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[1024];
-        int total = 0;
-        int read;
-        while ((read = input.read(buffer)) >= 0) {
-            total += read;
-            if (total > MAX_BODY_BYTES) {
-                throw new IOException("request body too large");
-            }
-            output.write(buffer, 0, read);
+    private static String commandPayload(String line, String command) {
+        if (line.length() <= command.length()) {
+            return "";
         }
-        return new String(output.toByteArray(), StandardCharsets.UTF_8).trim();
+        return line.substring(command.length()).trim();
     }
 
-    private static Map<String, String> query(HttpExchange exchange) throws IOException {
-        Map<String, String> result = new LinkedHashMap<String, String>();
-        String raw = exchange.getRequestURI().getRawQuery();
-        if (raw == null || raw.length() == 0) {
-            return result;
+    private static String[] commandParts(String line, String command) {
+        String payload = commandPayload(line, command);
+        if (payload.length() == 0) {
+            return new String[0];
         }
-        String[] parts = raw.split("&");
-        for (String part : parts) {
-            int eq = part.indexOf('=');
-            String key = eq < 0 ? part : part.substring(0, eq);
-            String value = eq < 0 ? "" : part.substring(eq + 1);
-            result.put(urlDecode(key), urlDecode(value));
-        }
-        return result;
+        return payload.split("[\\t ]+");
+    }
+
+    private static void writeLine(BufferedWriter output, String line) throws IOException {
+        output.write(line);
+        output.write('\n');
+        output.flush();
     }
 
     private static String jsonString(String json, String field) {
@@ -308,10 +289,6 @@ public final class ShareServer {
         return room + "|" + gameId;
     }
 
-    private static String firstNonEmpty(String a, String b) {
-        return !isBlank(a) ? a : b;
-    }
-
     private static String normalizeRoom(String room) {
         return isBlank(room) ? DEFAULT_ROOM : room.trim();
     }
@@ -331,12 +308,24 @@ public final class ShareServer {
         }
     }
 
-    private static String urlDecode(String text) throws IOException {
-        return URLDecoder.decode(text, "UTF-8");
-    }
-
     private static String jsonError(String code) {
         return "{\"ok\":false,\"error\":\"" + code + "\"}";
+    }
+
+    private static void closeQuietly(Object closeable) {
+        if (closeable == null) {
+            return;
+        }
+        try {
+            if (closeable instanceof Socket) {
+                ((Socket) closeable).close();
+            } else if (closeable instanceof BufferedReader) {
+                ((BufferedReader) closeable).close();
+            } else if (closeable instanceof BufferedWriter) {
+                ((BufferedWriter) closeable).close();
+            }
+        } catch (IOException ignored) {
+        }
     }
 
     private static final class Sample {

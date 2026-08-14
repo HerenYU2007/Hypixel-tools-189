@@ -1,15 +1,20 @@
 package com.example.fireballpredictor.agent;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -57,6 +62,9 @@ public final class FireballPredictorHooks {
     private static final int MAX_BEDWARS_ENEMIES = 16;
     private static final int PROTECTION_SAMPLE_LIMIT = 6;
     private static final int PROTECTION_SAMPLE_COOLDOWN_TICKS = 10;
+    private static final int PROTECTION_SHARE_SYNC_INTERVAL_TICKS = 20;
+    private static final int PROTECTION_SHARE_CONNECT_TIMEOUT_MILLIS = 2500;
+    private static final int PROTECTION_SHARE_READ_TIMEOUT_MILLIS = 3500;
     private static final boolean DAMAGE_DEBUG_CHAT = false;
     private static final double DAMAGE_EPSILON = 0.01D;
     private static final double WEAK_ENEMY_MAX_AVERAGE_KD = 0.70D;
@@ -67,6 +75,10 @@ public final class FireballPredictorHooks {
     private static final String DEFAULT_HYPIXEL_API_KEY = "0094afab-949d-4e06-b7dc-4d3db1282489";
     private static final String EXTRA_HYPIXEL_API_KEY = "63298aad-ad18-4305-b2e5-76c22f2b8514";
     private static final String DEFAULT_HYPIXEL_API_KEYS = DEFAULT_HYPIXEL_API_KEY + "," + EXTRA_HYPIXEL_API_KEY;
+    private static final String PROTECTION_SHARE_HOST = "3722d01e5a6f.ofalias.com";
+    private static final int PROTECTION_SHARE_PORT = 48820;
+    private static final String PROTECTION_SHARE_ROOM = "default";
+    private static final String PROTECTION_SHARE_SENDER_ID = "mc-" + UUID.randomUUID().toString().replace("-", "");
     private static final String WARNING_TEXT = "\u6709\u706b\u7130\u5f39\u6765\u88ad";
     private static final String WEAK_ENEMY_WARNING_TEXT = "\u5bf9\u9762\u662f\u5c0f\u5446\u5446";
     private static final float INVIS_WARNING_SCALE = 2.0F;
@@ -126,6 +138,7 @@ public final class FireballPredictorHooks {
     private static int invisCounter;
     private static int protectionCounter;
     private static int protectionDebugCounter;
+    private static int protectionShareCounter;
     private static int homeCounter;
     private static int hypixelStatsCounter;
     private static int lastHelmetTeamColor = -1;
@@ -153,12 +166,23 @@ public final class FireballPredictorHooks {
     private static int lastAimColor = -1;
     private static double lastAimHealth = -1.0D;
     private static int protectionSampleCooldownTicks;
+    private static volatile boolean protectionShareBusy;
+    private static volatile long protectionShareSince;
+    private static final List<RemoteProtectionSample> REMOTE_PROTECTION_PENDING = new ArrayList<RemoteProtectionSample>();
     private static Method enchantmentHelperGetEnchantments;
     private static boolean enchantmentHelperLookupDone;
     private static final ExecutorService HYPIXEL_STATS_EXECUTOR = Executors.newFixedThreadPool(4, new ThreadFactory() {
         @Override
         public Thread newThread(Runnable runnable) {
             Thread thread = new Thread(runnable, "fireballpredictor-hypixel-stats");
+            thread.setDaemon(true);
+            return thread;
+        }
+    });
+    private static final ExecutorService PROTECTION_SHARE_EXECUTOR = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "fireballpredictor-protection-share");
             thread.setDaemon(true);
             return thread;
         }
@@ -188,6 +212,7 @@ public final class FireballPredictorHooks {
                 invisCounter = 0;
                 protectionCounter = 0;
                 protectionDebugCounter = 0;
+                protectionShareCounter = 0;
                 homeCounter = 0;
                 hypixelStatsCounter = 0;
                 myColor = -1;
@@ -197,6 +222,7 @@ public final class FireballPredictorHooks {
                 invisWarningTicks = 0;
                 clearHypixelStatsState();
                 clearDamageProbeState();
+                clearProtectionShareState();
                 clearHomeState();
                 DIAMOND_GENS.clear();
                 EMERALD_GENS.clear();
@@ -215,6 +241,7 @@ public final class FireballPredictorHooks {
                 clearHomeState();
                 clearHypixelStatsState();
                 clearDamageProbeState();
+                clearProtectionShareState();
                 INVIS_ACTIVE_TEAMS.clear();
                 PROTECTION_BY_TEAM.clear();
                 PROTECTION_SAMPLES_BY_TEAM.clear();
@@ -277,6 +304,7 @@ public final class FireballPredictorHooks {
                 scanHypixelStats(ref, mc, world, player);
             }
             trackAttackDamage(ref, mc, world, player);
+            tickProtectionShare(ref);
             updateMiningBlock(ref, mc, world);
 
             if (++tickCounter < 5) {
@@ -2485,7 +2513,8 @@ public final class FireballPredictorHooks {
         Integer previous = PROTECTION_BY_TEAM.get(team);
         int previousLevel = previous == null ? -1 : previous.intValue();
         guess = adjustProtectionGuessWithProgression(probe, observedDamage, guess, previousLevel);
-        samples.add(new ProtectionSample(attackDamage, probe.armor.points, observedDamage, guess.level));
+        ProtectionSample acceptedSample = new ProtectionSample(attackDamage, probe.armor.points, observedDamage, guess.level);
+        samples.add(acceptedSample);
         while (samples.size() > PROTECTION_SAMPLE_LIMIT) {
             samples.remove(0);
         }
@@ -2511,9 +2540,151 @@ public final class FireballPredictorHooks {
                     + " critical=" + probe.critical
                     + " predictedDamage=" + formatOneDecimal(voted.predictedDamage)
                     + " error=" + formatOneDecimal(voted.error));
+            pushProtectionShare(team, acceptedSample);
             return new ProtectionUpdate(true, "\u5165\u6837" + samples.size() + "\u2192" + voted.level);
         }
         return new ProtectionUpdate(false, "\u5ffd\u7565:\u6837\u672c\u5f02\u5e38");
+    }
+
+    private static void tickProtectionShare(Reflection ref) {
+        drainRemoteProtectionSamples();
+        if (++protectionShareCounter < PROTECTION_SHARE_SYNC_INTERVAL_TICKS) {
+            return;
+        }
+        protectionShareCounter = 0;
+        final String gameId = protectionShareGameId();
+        if (gameId.length() == 0 || protectionShareBusy) {
+            return;
+        }
+        protectionShareBusy = true;
+        final long since = protectionShareSince;
+        PROTECTION_SHARE_EXECUTOR.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String response = sendProtectionShareLine("PULL " + gameId + " " + since + " "
+                            + PROTECTION_SHARE_SENDER_ID + " " + PROTECTION_SHARE_ROOM);
+                    if (response == null || response.indexOf("\"ok\":true") < 0) {
+                        FireballPredictorAgentLog.write("protection share pull failed: " + response);
+                        return;
+                    }
+                    long serverTime = (long) readJsonNumber(response, "serverTime", since);
+                    List<String> objects = readJsonObjectsInArray(response, "samples");
+                    if (!objects.isEmpty()) {
+                        synchronized (REMOTE_PROTECTION_PENDING) {
+                            for (String object : objects) {
+                                RemoteProtectionSample sample = RemoteProtectionSample.fromJson(object);
+                                if (sample != null) {
+                                    REMOTE_PROTECTION_PENDING.add(sample);
+                                }
+                            }
+                        }
+                    }
+                    protectionShareSince = Math.max(protectionShareSince, serverTime);
+                } catch (Throwable t) {
+                    FireballPredictorAgentLog.write("protection share pull error: " + t + " " + t.getMessage());
+                } finally {
+                    protectionShareBusy = false;
+                }
+            }
+        });
+    }
+
+    private static void pushProtectionShare(final String team, final ProtectionSample sample) {
+        final String gameId = protectionShareGameId();
+        if (gameId.length() == 0 || team == null || sample == null) {
+            return;
+        }
+        PROTECTION_SHARE_EXECUTOR.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String json = "{\"room\":\"" + PROTECTION_SHARE_ROOM
+                            + "\",\"gameId\":\"" + jsonEscape(gameId)
+                            + "\",\"senderId\":\"" + PROTECTION_SHARE_SENDER_ID
+                            + "\",\"team\":\"" + jsonEscape(team)
+                            + "\",\"rawDamage\":" + formatOneDecimal(sample.rawDamage)
+                            + ",\"armorPoints\":" + sample.armorPoints
+                            + ",\"observedDamage\":" + formatOneDecimal(sample.observedDamage)
+                            + ",\"guessedLevel\":" + sample.guessedLevel + "}";
+                    String response = sendProtectionShareLine("PUSH " + json);
+                    if (response == null || response.indexOf("\"ok\":true") < 0) {
+                        FireballPredictorAgentLog.write("protection share push failed: " + response);
+                    }
+                } catch (Throwable t) {
+                    FireballPredictorAgentLog.write("protection share push error: " + t + " " + t.getMessage());
+                }
+            }
+        });
+    }
+
+    private static void drainRemoteProtectionSamples() {
+        List<RemoteProtectionSample> pending;
+        synchronized (REMOTE_PROTECTION_PENDING) {
+            if (REMOTE_PROTECTION_PENDING.isEmpty()) {
+                return;
+            }
+            pending = new ArrayList<RemoteProtectionSample>(REMOTE_PROTECTION_PENDING);
+            REMOTE_PROTECTION_PENDING.clear();
+        }
+        for (RemoteProtectionSample remote : pending) {
+            if (remote.team == null || remote.team.length() == 0 || teamColor(remote.team) == myColor) {
+                continue;
+            }
+            PROTECTION_VISIBLE_ENEMY_TEAMS.add(remote.team);
+            List<ProtectionSample> samples = PROTECTION_SAMPLES_BY_TEAM.get(remote.team);
+            if (samples == null) {
+                samples = new ArrayList<ProtectionSample>();
+                PROTECTION_SAMPLES_BY_TEAM.put(remote.team, samples);
+            }
+            samples.add(new ProtectionSample(remote.rawDamage, remote.armorPoints,
+                    remote.observedDamage, remote.guessedLevel));
+            while (samples.size() > PROTECTION_SAMPLE_LIMIT) {
+                samples.remove(0);
+            }
+            updateProtectionProbability(remote.team, samples);
+            ProtectionProbability probability = PROTECTION_PROBABILITY_BY_TEAM.get(remote.team);
+            if (probability != null && probability.firstLevel >= 0) {
+                PROTECTION_BY_TEAM.put(remote.team, Integer.valueOf(probability.firstLevel));
+                FireballPredictorAgentLog.write("protection share merged: team=" + remote.team
+                        + " level=" + probability.firstLevel
+                        + " first=" + probability.firstPercent
+                        + " second=" + probability.secondLevel + ":" + probability.secondPercent);
+            }
+        }
+    }
+
+    private static String protectionShareGameId() {
+        if (hypixelStatsGameKey != null && hypixelStatsGameKey.trim().length() > 0) {
+            return "players-" + sanitizeShareToken(hypixelStatsGameKey);
+        }
+        if (!homeSet) {
+            return "";
+        }
+        int bucketX = Math.floorDiv(homeX, 4);
+        int bucketZ = Math.floorDiv(homeZ, 4);
+        return "bed-" + homeTeamColor + "-" + bucketX + "-" + homeY + "-" + bucketZ;
+    }
+
+    private static String sendProtectionShareLine(String line) throws IOException {
+        Socket socket = new Socket();
+        BufferedWriter writer = null;
+        BufferedReader reader = null;
+        try {
+            socket.connect(new InetSocketAddress(PROTECTION_SHARE_HOST, PROTECTION_SHARE_PORT),
+                    PROTECTION_SHARE_CONNECT_TIMEOUT_MILLIS);
+            socket.setSoTimeout(PROTECTION_SHARE_READ_TIMEOUT_MILLIS);
+            writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), "UTF-8"));
+            reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), "UTF-8"));
+            writer.write(line);
+            writer.write('\n');
+            writer.flush();
+            return reader.readLine();
+        } finally {
+            closeQuietly(reader);
+            closeQuietly(writer);
+            closeQuietly(socket);
+        }
     }
 
     private static boolean isProtectionZeroLocked() {
@@ -3285,6 +3456,88 @@ public final class FireballPredictorHooks {
         }
     }
 
+    private static String readJsonString(String json, String field) {
+        String needle = "\"" + field + "\"";
+        int index = json.indexOf(needle);
+        if (index < 0) {
+            return "";
+        }
+        int colon = json.indexOf(':', index + needle.length());
+        if (colon < 0) {
+            return "";
+        }
+        int start = json.indexOf('"', colon + 1);
+        if (start < 0) {
+            return "";
+        }
+        StringBuilder value = new StringBuilder();
+        boolean escaped = false;
+        for (int i = start + 1; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (escaped) {
+                value.append(c);
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                return value.toString();
+            } else {
+                value.append(c);
+            }
+        }
+        return "";
+    }
+
+    private static List<String> readJsonObjectsInArray(String json, String field) {
+        List<String> result = new ArrayList<String>();
+        String needle = "\"" + field + "\"";
+        int fieldIndex = json.indexOf(needle);
+        if (fieldIndex < 0) {
+            return result;
+        }
+        int arrayStart = json.indexOf('[', fieldIndex + needle.length());
+        if (arrayStart < 0) {
+            return result;
+        }
+        int depth = 0;
+        int objectStart = -1;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = arrayStart + 1; i < json.length(); i++) {
+            char ch = json.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inString) {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) {
+                continue;
+            }
+            if (ch == '{') {
+                if (depth == 0) {
+                    objectStart = i;
+                }
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0 && objectStart >= 0) {
+                    result.add(json.substring(objectStart, i + 1));
+                    objectStart = -1;
+                }
+            } else if (ch == ']' && depth == 0) {
+                break;
+            }
+        }
+        return result;
+    }
+
     private static String readJsonObject(String json, String field) {
         String needle = "\"" + field + "\"";
         int fieldIndex = json.indexOf(needle);
@@ -3348,6 +3601,29 @@ public final class FireballPredictorHooks {
         lastAimColor = -1;
         lastAimHealth = -1.0D;
         protectionSampleCooldownTicks = 0;
+    }
+
+    private static void clearProtectionShareState() {
+        protectionShareCounter = 0;
+        protectionShareSince = 0L;
+        protectionShareBusy = false;
+        synchronized (REMOTE_PROTECTION_PENDING) {
+            REMOTE_PROTECTION_PENDING.clear();
+        }
+    }
+
+    private static String sanitizeShareToken(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replaceAll("[^A-Za-z0-9_.:-]", "_");
+    }
+
+    private static String jsonEscape(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static String stripFormatting(String text) {
@@ -3731,6 +4007,36 @@ public final class FireballPredictorHooks {
             this.armorPoints = armorPoints;
             this.observedDamage = observedDamage;
             this.guessedLevel = guessedLevel;
+        }
+    }
+
+    private static final class RemoteProtectionSample {
+        final String team;
+        final double rawDamage;
+        final int armorPoints;
+        final double observedDamage;
+        final int guessedLevel;
+
+        RemoteProtectionSample(String team, double rawDamage, int armorPoints,
+                               double observedDamage, int guessedLevel) {
+            this.team = team;
+            this.rawDamage = rawDamage;
+            this.armorPoints = armorPoints;
+            this.observedDamage = observedDamage;
+            this.guessedLevel = guessedLevel;
+        }
+
+        static RemoteProtectionSample fromJson(String json) {
+            String team = readJsonString(json, "team");
+            int guessedLevel = (int) readJsonNumber(json, "guessedLevel", -1.0D);
+            if (team.length() == 0 || guessedLevel < 0 || guessedLevel > 4) {
+                return null;
+            }
+            return new RemoteProtectionSample(team,
+                    readJsonNumber(json, "rawDamage", 0.0D),
+                    (int) readJsonNumber(json, "armorPoints", 0.0D),
+                    readJsonNumber(json, "observedDamage", 0.0D),
+                    guessedLevel);
         }
     }
 
