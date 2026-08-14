@@ -1,3 +1,4 @@
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\AgentModels.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\AutoTranslationHooks.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\AutoTranslationPatcher.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorAgent.java
@@ -7,6 +8,7 @@ C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredi
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorLaunchTransformer.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorPatcher.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\FireballPredictorTweaker.java
+C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\com\example\fireballpredictor\agent\ProtectionRules.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\org\universaltranslator\core\LanguageHeuristics.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\org\universaltranslator\core\LocalConfigSecurity.java
 C:\Users\97105\Documents\1.8.9\src\fireball_invis\java\org\universaltranslator\core\PersistentTranslationCache.java

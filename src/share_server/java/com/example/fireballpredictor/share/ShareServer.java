@@ -2,6 +2,8 @@ package com.example.fireballpredictor.share;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
@@ -25,22 +27,26 @@ public final class ShareServer {
     private static final int MAX_LINE_CHARS = 32 * 1024;
 
     private final Object lock = new Object();
+    private final Object logLock = new Object();
     private final Map<String, List<Sample>> samplesByGame = new LinkedHashMap<String, List<Sample>>();
     private final long ttlMillis;
     private final int maxSamplesPerGame;
+    private final File logDir;
     private final ExecutorService workers = Executors.newCachedThreadPool();
 
-    private ShareServer(long ttlMillis, int maxSamplesPerGame) {
+    private ShareServer(long ttlMillis, int maxSamplesPerGame, File logDir) {
         this.ttlMillis = ttlMillis;
         this.maxSamplesPerGame = maxSamplesPerGame;
+        this.logDir = logDir;
     }
 
     public static void main(String[] args) throws Exception {
         Config config = Config.parse(args);
-        ShareServer app = new ShareServer(config.ttlMillis, config.maxSamplesPerGame);
+        ShareServer app = new ShareServer(config.ttlMillis, config.maxSamplesPerGame, config.logDir);
         ServerSocket server = new ServerSocket();
         server.bind(new InetSocketAddress(config.host, config.port));
         System.out.println("Fireball share server listening on tcp://" + config.host + ":" + config.port);
+        System.out.println("Sample logs: " + config.logDir.getAbsolutePath());
         System.out.println("Protocol: PING | PUSH <json> | PULL <gameId> [since] [excludeSenderId] [room] | CLEAR [gameId] [room]");
         while (true) {
             final Socket socket = server.accept();
@@ -129,7 +135,29 @@ public final class ShareServer {
                 samples.remove(0);
             }
         }
+        appendSampleLog(room, gameId, enriched);
         return "{\"ok\":true,\"serverTime\":" + now + "}";
+    }
+
+    private void appendSampleLog(String room, String gameId, String json) {
+        synchronized (logLock) {
+            BufferedWriter writer = null;
+            try {
+                File roomDir = new File(logDir, safePathPart(room));
+                if (!roomDir.isDirectory() && !roomDir.mkdirs()) {
+                    throw new IOException("failed to create log dir: " + roomDir);
+                }
+                File file = new File(roomDir, safePathPart(gameId) + ".jsonl");
+                writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(file, true), StandardCharsets.UTF_8));
+                writer.write(json);
+                writer.write('\n');
+                writer.flush();
+            } catch (Throwable t) {
+                System.err.println("Failed to append sample log for " + room + "/" + gameId + ": " + t);
+            } finally {
+                closeQuietly(writer);
+            }
+        }
     }
 
     private String handlePull(String[] parts) {
@@ -293,6 +321,15 @@ public final class ShareServer {
         return isBlank(room) ? DEFAULT_ROOM : room.trim();
     }
 
+    private static String safePathPart(String text) {
+        String value = isBlank(text) ? "unknown" : text.trim();
+        value = value.replaceAll("[^A-Za-z0-9_.-]", "_");
+        if (value.length() > 96) {
+            value = value.substring(0, 96);
+        }
+        return value.length() == 0 ? "unknown" : value;
+    }
+
     private static boolean isBlank(String text) {
         return text == null || text.trim().length() == 0;
     }
@@ -345,6 +382,7 @@ public final class ShareServer {
         int port = DEFAULT_PORT;
         long ttlMillis = DEFAULT_TTL_MILLIS;
         int maxSamplesPerGame = DEFAULT_MAX_SAMPLES_PER_GAME;
+        File logDir = new File(new File(System.getProperty("user.dir"), "logs"), "fireball-share-server");
 
         static Config parse(String[] args) {
             Config config = new Config();
@@ -358,6 +396,8 @@ public final class ShareServer {
                     config.ttlMillis = parseLong(args[++i], DEFAULT_TTL_MILLIS / 1000L) * 1000L;
                 } else if ("--max-samples".equals(arg) && i + 1 < args.length) {
                     config.maxSamplesPerGame = (int) parseLong(args[++i], DEFAULT_MAX_SAMPLES_PER_GAME);
+                } else if ("--log-dir".equals(arg) && i + 1 < args.length) {
+                    config.logDir = new File(args[++i]);
                 }
             }
             return config;
