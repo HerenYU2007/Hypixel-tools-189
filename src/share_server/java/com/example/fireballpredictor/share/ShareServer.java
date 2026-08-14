@@ -21,6 +21,7 @@ import java.util.concurrent.Executors;
 
 public final class ShareServer {
     private static final int DEFAULT_PORT = 18989;
+    private static final String DEFAULT_ROOM = "default";
     private static final long DEFAULT_TTL_MILLIS = 10L * 60L * 1000L;
     private static final int DEFAULT_MAX_SAMPLES_PER_GAME = 600;
     private static final int MAX_BODY_BYTES = 16 * 1024;
@@ -67,8 +68,9 @@ public final class ShareServer {
             String room = firstNonEmpty(query(exchange).get("room"), jsonString(body, "room"));
             String gameId = firstNonEmpty(query(exchange).get("gameId"), jsonString(body, "gameId"));
             String senderId = firstNonEmpty(query(exchange).get("senderId"), jsonString(body, "senderId"));
-            if (isBlank(room) || isBlank(gameId)) {
-                send(exchange, 400, jsonError("missing_room_or_gameId"));
+            room = normalizeRoom(room);
+            if (isBlank(gameId)) {
+                send(exchange, 400, jsonError("missing_gameId"));
                 return;
             }
 
@@ -102,12 +104,12 @@ public final class ShareServer {
                 return;
             }
             Map<String, String> q = query(exchange);
-            String room = q.get("room");
+            String room = normalizeRoom(q.get("room"));
             String gameId = q.get("gameId");
             String sinceText = q.get("since");
             String excludeSenderId = q.get("excludeSenderId");
-            if (isBlank(room) || isBlank(gameId)) {
-                send(exchange, 400, jsonError("missing_room_or_gameId"));
+            if (isBlank(gameId)) {
+                send(exchange, 400, jsonError("missing_gameId"));
                 return;
             }
             long since = parseLong(sinceText, 0L);
@@ -152,7 +154,7 @@ public final class ShareServer {
                 return;
             }
             Map<String, String> q = query(exchange);
-            String room = q.get("room");
+            String room = normalizeRoom(q.get("room"));
             String gameId = q.get("gameId");
             synchronized (lock) {
                 if (!isBlank(room) && !isBlank(gameId)) {
@@ -308,6 +310,10 @@ public final class ShareServer {
 
     private static String firstNonEmpty(String a, String b) {
         return !isBlank(a) ? a : b;
+    }
+
+    private static String normalizeRoom(String room) {
+        return isBlank(room) ? DEFAULT_ROOM : room.trim();
     }
 
     private static boolean isBlank(String text) {
