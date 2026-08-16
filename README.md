@@ -47,25 +47,25 @@ outputs\fireball-share-server.jar
 完整版：
 
 ```text
--javaagent:C:\Users\97105\Documents\1.8.9\outputs\fair-av-standalone-agent-1.8.9-fireball-gen-pro-esp.jar=appendBootstrap
+-javaagent:outputs\fair-av-standalone-agent-1.8.9-fireball-gen-pro-esp.jar=appendBootstrap
 ```
 
 轻量版：
 
 ```text
--javaagent:C:\Users\97105\Documents\1.8.9\outputs\fireball-invis-standalone-agent-1.8.9.jar=appendBootstrap
+-javaagent:outputs\fireball-invis-standalone-agent-1.8.9.jar=appendBootstrap
 ```
 
 测试版，完整版：
 
 ```text
--javaagent:C:\Users\97105\Documents\1.8.9\outputs\fair-av-standalone-agent-1.8.9-fireball-gen-pro-esp-prot-time-unlocked-test-v2.jar=appendBootstrap
+-javaagent:outputs\fair-av-standalone-agent-1.8.9-fireball-gen-pro-esp-prot-time-unlocked-test-v2.jar=appendBootstrap
 ```
 
 测试版，轻量版：
 
 ```text
--javaagent:C:\Users\97105\Documents\1.8.9\outputs\fireball-invis-standalone-agent-1.8.9-prot-time-unlocked-test.jar=appendBootstrap
+-javaagent:outputs\fireball-invis-standalone-agent-1.8.9-prot-time-unlocked-test.jar=appendBootstrap
 ```
 
 ## 功能概览
