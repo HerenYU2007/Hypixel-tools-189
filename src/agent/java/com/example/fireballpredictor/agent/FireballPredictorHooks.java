@@ -44,7 +44,7 @@ public final class FireballPredictorHooks {
     private static final int PROTECTION_DEBUG_INTERVAL_TICKS = 100;
     private static final int PROTECTION_ZERO_LOCK_TICKS_AFTER_BED = 1800;
     private static final int PROTECTION_TWO_ECONOMY_TICKS_AFTER_BED = 5200;
-    private static final int PROTECTION_THREE_ECONOMY_TICKS_AFTER_BED = 15000;
+    private static final int PROTECTION_THREE_ECONOMY_TICKS_AFTER_BED = 10800;
     private static final int INVIS_WARNING_TICKS = 200;
     private static final int INVIS_ALERT_MAX_DISTANCE = 50;
     private static final int HOME_SCAN_INTERVAL_TICKS = 20;
@@ -73,9 +73,11 @@ public final class FireballPredictorHooks {
     private static final double WEAK_ENEMY_LOW_AVERAGE_KILLS_WITH_LOW_STARS = 400.0D;
     private static final double WEAK_ENEMY_MAX_AVERAGE_KILLS = 500.0D;
     private static final double TRACE_DISTANCE = 100.0D;
-    private static final String DEFAULT_HYPIXEL_API_KEY = "0094afab-949d-4e06-b7dc-4d3db1282489";
-    private static final String EXTRA_HYPIXEL_API_KEY = "63298aad-ad18-4305-b2e5-76c22f2b8514";
-    private static final String DEFAULT_HYPIXEL_API_KEYS = DEFAULT_HYPIXEL_API_KEY + "," + EXTRA_HYPIXEL_API_KEY;
+    private static final String DEFAULT_HYPIXEL_API_KEY = "92e1efcb-dce7-4087-86fb-4dcf981b4ea2";
+    private static final String EXTRA_HYPIXEL_API_KEY = "322cd413-9d3b-486f-84de-9716cca33416";
+    private static final String SECOND_EXTRA_HYPIXEL_API_KEY = "429b2968-de16-4c23-84c4-c6856e8465f8";
+    private static final String DEFAULT_HYPIXEL_API_KEYS = DEFAULT_HYPIXEL_API_KEY + ","
+            + EXTRA_HYPIXEL_API_KEY + "," + SECOND_EXTRA_HYPIXEL_API_KEY;
     private static final String PROTECTION_SHARE_HOST = "3722d01e5a6f.ofalias.com";
     private static final int PROTECTION_SHARE_PORT = 48820;
     private static final String PROTECTION_SHARE_ROOM = "default";
@@ -160,6 +162,8 @@ public final class FireballPredictorHooks {
             Collections.synchronizedMap(new LinkedHashMap<String, HypixelStatsEntry>());
     private static final Set<String> HYPIXEL_STATS_REQUESTED =
             Collections.synchronizedSet(new LinkedHashSet<String>());
+    private static final Map<String, Long> HYPIXEL_STATS_RETRY_AFTER =
+            Collections.synchronizedMap(new LinkedHashMap<String, Long>());
     private static boolean damageAttackWasDown;
     private static DamageProbe damageProbe;
     private static String lastAimUuid;
@@ -2133,7 +2137,9 @@ public final class FireballPredictorHooks {
         int previousLevel = previous == null ? -1 : previous.intValue();
         guess = ProtectionRules.adjustWithProgression(probe, observedDamage, guess, previousLevel,
                 isLateProtectionThreeWindow());
-        ProtectionSample acceptedSample = new ProtectionSample(attackDamage, probe.armor.points, observedDamage, guess.level);
+        ProtectionSample acceptedSample = new ProtectionSample(attackDamage, probe.armor.points, observedDamage,
+                guess.level, probe.armor.label, probe.sword.label, probe.sword.sharpnessLevel, probe.critical,
+                guess.predictedDamage, guess.error);
         samples.add(acceptedSample);
         while (samples.size() > PROTECTION_SAMPLE_LIMIT) {
             samples.remove(0);
@@ -2227,6 +2233,12 @@ public final class FireballPredictorHooks {
                             + "\",\"rawDamage\":" + formatOneDecimal(sample.rawDamage)
                             + ",\"armorPoints\":" + sample.armorPoints
                             + ",\"observedDamage\":" + formatOneDecimal(sample.observedDamage)
+                            + ",\"armorLabel\":\"" + jsonEscape(sample.armorLabel)
+                            + "\",\"swordLabel\":\"" + jsonEscape(sample.swordLabel)
+                            + "\",\"sharpnessLevel\":" + sample.sharpnessLevel
+                            + ",\"critical\":" + sample.critical
+                            + ",\"predictedDamage\":" + formatOneDecimal(sample.predictedDamage)
+                            + ",\"error\":" + formatOneDecimal(sample.error)
                             + ",\"guessedLevel\":" + sample.guessedLevel + "}";
                     String response = sendProtectionShareLine("PUSH " + json);
                     if (response == null || response.indexOf("\"ok\":true") < 0) {
@@ -2259,7 +2271,8 @@ public final class FireballPredictorHooks {
                 PROTECTION_SAMPLES_BY_TEAM.put(remote.team, samples);
             }
             samples.add(new ProtectionSample(remote.rawDamage, remote.armorPoints,
-                    remote.observedDamage, remote.guessedLevel));
+                    remote.observedDamage, remote.guessedLevel, remote.armorLabel, remote.swordLabel,
+                    remote.sharpnessLevel, remote.critical, remote.predictedDamage, remote.error));
             while (samples.size() > PROTECTION_SAMPLE_LIMIT) {
                 samples.remove(0);
             }
@@ -2361,7 +2374,7 @@ public final class FireballPredictorHooks {
     private static void scanHypixelStats(Reflection ref, Object mc, Object world, Object player) {
         try {
             HypixelStatsConfig config = hypixelStatsConfig();
-            if (!config.enabled || config.apiKey.length() == 0 || myColor == -1
+            if (!config.enabled || myColor == -1
                     || !homeSet || !isHomeBedPresent(ref, world)) {
                 weakEnemyWarningActive = false;
                 hypixelStatsDetectedTicks = 0;
@@ -2402,10 +2415,15 @@ public final class FireballPredictorHooks {
                         continue;
                     }
                 }
+                Long retryAfter = HYPIXEL_STATS_RETRY_AFTER.get(enemy.uuid);
+                if (retryAfter != null && now < retryAfter.longValue()) {
+                    continue;
+                }
                 HypixelStatsEntry cached = getCachedHypixelStats(config, enemy.uuid, now);
                 if (cached != null) {
                     postHypixelStatsLine(ref.loader, cached.withName(enemy.name), enemy.color);
                     markHypixelStatsRequested(enemy.uuid);
+                    clearHypixelStatsRetry(enemy.uuid);
                     continue;
                 }
                 synchronized (HYPIXEL_STATS_REQUESTED) {
@@ -2670,12 +2688,28 @@ public final class FireballPredictorHooks {
         }
     }
 
+    private static void unmarkHypixelStatsRequested(String uuid) {
+        synchronized (HYPIXEL_STATS_REQUESTED) {
+            HYPIXEL_STATS_REQUESTED.remove(uuid);
+        }
+    }
+
+    private static void markHypixelStatsRetry(String uuid, long retryAfter) {
+        HYPIXEL_STATS_RETRY_AFTER.put(uuid, Long.valueOf(retryAfter));
+    }
+
+    private static void clearHypixelStatsRetry(String uuid) {
+        HYPIXEL_STATS_RETRY_AFTER.remove(uuid);
+    }
+
     private static void postHypixelStatsLine(ClassLoader loader, HypixelStatsEntry entry, int color) {
         try {
             postLocalChat(loader, "\u00a7b[Stats] " + chatTeamColorCode(color) + entry.name
                     + " \u00a77\u661f\u6570:\u00a7e" + entry.stars
                     + " \u00a77\u603b\u51fb\u6740:\u00a7e" + entry.kills
-                    + " \u00a77\u603bKD:\u00a7e" + formatKd(entry.kd));
+                    + " \u00a77\u62c6\u5e8a:\u00a7e" + entry.bedsBroken
+                    + " \u00a77\u603bKD:\u00a7e" + formatKd(entry.kd)
+                    + (entry.isProbablyNick() ? " \u00a77(\u53ef\u80fd\u662fNICK)" : ""));
         } catch (Throwable t) {
             FireballPredictorAgentLog.write("hypixel stats chat error: " + t);
         }
@@ -2719,7 +2753,7 @@ public final class FireballPredictorHooks {
                 Boolean.parseBoolean(properties.getProperty("enabled", "true")),
                 apiKey,
                 apiKeys,
-                Long.parseLong(properties.getProperty("cache-minutes", "360")) * 60L * 1000L,
+                10L * 60L * 1000L,
                 new File(file.getParentFile(), "fireballpredictor-hypixel-stats-cache-v2.properties"));
         return hypixelStatsConfig;
     }
@@ -2808,31 +2842,29 @@ public final class FireballPredictorHooks {
     }
 
     private static HypixelStatsEntry fetchHypixelStats(HypixelStatsConfig config, PlayerSnapshot player) throws Exception {
-        Exception lastError = null;
-        int attempts = Math.max(1, config.apiKeys.length);
-        for (int attempt = 0; attempt < attempts; attempt++) {
-            String apiKey = nextHypixelApiKey(config);
-            try {
-                return fetchHypixelStatsWithKey(apiKey, player);
-            } catch (HypixelHttpException e) {
-                lastError = e;
-                FireballPredictorAgentLog.write("hypixel stats key failed for " + player.name
-                        + ": http=" + e.code + " key=" + maskApiKey(apiKey) + " body=" + e.body);
-                if (e.code != 403 || e.body == null || e.body.indexOf("Invalid API key") < 0) {
-                    throw e;
-                }
-            }
+        String response = sendProtectionShareLine("STATS " + player.uuid + " " + player.name);
+        if (response == null || response.indexOf("\"ok\":true") < 0) {
+            throw new IOException("stats server failed: " + shortText(response, 160));
         }
-        throw lastError == null ? new IllegalStateException("Hypixel stats fetch failed") : lastError;
+        String name = readJsonString(response, "name");
+        if (name.length() == 0) {
+            name = player.name;
+        }
+        long timestamp = (long) readJsonNumber(response, "timestamp", System.currentTimeMillis());
+        return new HypixelStatsEntry(player.uuid, name, timestamp,
+                (int) readJsonNumber(response, "stars", 0.0D),
+                (long) readJsonNumber(response, "kills", 0.0D),
+                (long) readJsonNumber(response, "bedsBroken", 0.0D),
+                readJsonNumber(response, "kd", 0.0D));
     }
 
     private static HypixelStatsEntry fetchHypixelStatsWithKey(String apiKey, PlayerSnapshot player) throws Exception {
-        URL url = new URL("https://api.hypixel.net/player?uuid=" + player.uuid);
+        URL url = new URL("https://api.hypixel.net/v2/player?uuid=" + player.uuid);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setConnectTimeout(5000);
         connection.setReadTimeout(7000);
         connection.setRequestMethod("GET");
-        connection.setRequestProperty("Api-Key", apiKey);
+        connection.setRequestProperty("API-Key", apiKey);
         connection.setRequestProperty("User-Agent", "FireballPredictorAgent/1.8.9");
 
         int code = connection.getResponseCode();
@@ -2860,9 +2892,10 @@ public final class FireballPredictorHooks {
         double experience = readJsonNumber(bedwars, "Experience", 0.0D);
         long kills = (long) readJsonNumber(bedwars, "kills_bedwars", 0.0D);
         long deaths = (long) readJsonNumber(bedwars, "deaths_bedwars", 0.0D);
+        long bedsBroken = (long) readJsonNumber(bedwars, "beds_broken_bedwars", 0.0D);
         double kd = deaths <= 0L ? (double) kills : (double) kills / (double) deaths;
         return new HypixelStatsEntry(player.uuid, player.name, System.currentTimeMillis(),
-                bedwarsStars(experience), kills, kd);
+                bedwarsStars(experience), kills, bedsBroken, kd);
     }
 
     private static String maskApiKey(String apiKey) {
@@ -2870,6 +2903,14 @@ public final class FireballPredictorHooks {
             return "****";
         }
         return apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length() - 4);
+    }
+
+    private static String shortText(String text, int max) {
+        if (text == null) {
+            return "";
+        }
+        String value = text.replace('\n', ' ').replace('\r', ' ');
+        return value.length() <= max ? value : value.substring(0, max);
     }
 
     private static int bedwarsStars(double experience) {
@@ -3048,6 +3089,7 @@ public final class FireballPredictorHooks {
         synchronized (HYPIXEL_STATS_REQUESTED) {
             HYPIXEL_STATS_REQUESTED.clear();
         }
+        HYPIXEL_STATS_RETRY_AFTER.clear();
     }
 
     private static void clearDamageProbeState() {
@@ -3325,16 +3367,47 @@ public final class FireballPredictorHooks {
             try {
                 HypixelStatsEntry entry = fetchHypixelStats(config, player);
                 HYPIXEL_STATS_CACHE.put(player.uuid, entry);
+                clearHypixelStatsRetry(player.uuid);
                 saveHypixelStatsCache(config);
                 postHypixelStatsLine(loader, entry, player.color);
             } catch (Throwable t) {
+                unmarkHypixelStatsRequested(player.uuid);
+                markHypixelStatsRetry(player.uuid, System.currentTimeMillis() + 15000L);
                 FireballPredictorAgentLog.write("hypixel stats fetch failed for " + player.name + ": " + t + " " + t.getMessage());
                 try {
-                    postLocalChat(loader, "\u00a7c[Stats] \u00a7f" + player.name + " \u67e5\u8be2\u5931\u8d25");
+                    postLocalChat(loader, "\u00a7c[Stats] \u00a7f" + player.name
+                            + " \u67e5\u8be2\u5931\u8d25 \u00a77(" + hypixelStatsFailureReason(t) + "\uff0c15\u79d2\u540e\u91cd\u8bd5)");
                 } catch (Throwable ignored) {
                 }
             }
         }
+    }
+
+    private static String hypixelStatsFailureReason(Throwable t) {
+        if (t instanceof HypixelHttpException) {
+            HypixelHttpException e = (HypixelHttpException) t;
+            if (e.code == 403 && e.body != null && e.body.indexOf("Invalid API key") >= 0) {
+                return "API Key\u65e0\u6548";
+            }
+            if (e.code == 429) {
+                return "\u8bf7\u6c42\u592a\u9891\u7e41";
+            }
+            return "HTTP " + e.code;
+        }
+        String message = t == null ? "" : String.valueOf(t.getMessage());
+        if (message.indexOf("Invalid API key") >= 0 || message.indexOf("hypixel_http_403") >= 0) {
+            return "API Key\u65e0\u6548";
+        }
+        if (message.indexOf("hypixel_http_429") >= 0) {
+            return "\u8bf7\u6c42\u592a\u9891\u7e41";
+        }
+        if (message.indexOf("stats server failed") >= 0) {
+            return "\u670d\u52a1\u7aef\u67e5\u8be2\u5931\u8d25";
+        }
+        if (message.length() > 36) {
+            message = message.substring(0, 36);
+        }
+        return message.length() == 0 ? "\u672a\u77e5\u9519\u8bef" : message;
     }
 
     private static final class Reflection {

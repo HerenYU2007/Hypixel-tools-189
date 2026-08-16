@@ -64,8 +64,8 @@ public final class FireballPredictorHooks {
     private static final double WEAK_ENEMY_LOW_AVERAGE_KILLS_WITH_LOW_STARS = 400.0D;
     private static final double WEAK_ENEMY_MAX_AVERAGE_KILLS = 500.0D;
     private static final double TRACE_DISTANCE = 100.0D;
-    private static final String DEFAULT_HYPIXEL_API_KEY = "0094afab-949d-4e06-b7dc-4d3db1282489";
-    private static final String EXTRA_HYPIXEL_API_KEY = "63298aad-ad18-4305-b2e5-76c22f2b8514";
+    private static final String DEFAULT_HYPIXEL_API_KEY = "322cd413-9d3b-486f-84de-9716cca33416";
+    private static final String EXTRA_HYPIXEL_API_KEY = "429b2968-de16-4c23-84c4-c6856e8465f8";
     private static final String DEFAULT_HYPIXEL_API_KEYS = DEFAULT_HYPIXEL_API_KEY + "," + EXTRA_HYPIXEL_API_KEY;
     private static final String WARNING_TEXT = "\u6709\u706b\u7130\u5f39\u6765\u88ad";
     private static final String WEAK_ENEMY_WARNING_TEXT = "\u5bf9\u9762\u662f\u5c0f\u5446\u5446";

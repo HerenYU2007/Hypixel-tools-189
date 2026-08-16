@@ -128,12 +128,30 @@ final class ProtectionSample {
     final int armorPoints;
     final double observedDamage;
     final int guessedLevel;
+    final String armorLabel;
+    final String swordLabel;
+    final int sharpnessLevel;
+    final boolean critical;
+    final double predictedDamage;
+    final double error;
 
     ProtectionSample(double rawDamage, int armorPoints, double observedDamage, int guessedLevel) {
+        this(rawDamage, armorPoints, observedDamage, guessedLevel, "", "", 0, false, 0.0D, 0.0D);
+    }
+
+    ProtectionSample(double rawDamage, int armorPoints, double observedDamage, int guessedLevel,
+                     String armorLabel, String swordLabel, int sharpnessLevel, boolean critical,
+                     double predictedDamage, double error) {
         this.rawDamage = rawDamage;
         this.armorPoints = armorPoints;
         this.observedDamage = observedDamage;
         this.guessedLevel = guessedLevel;
+        this.armorLabel = armorLabel == null ? "" : armorLabel;
+        this.swordLabel = swordLabel == null ? "" : swordLabel;
+        this.sharpnessLevel = sharpnessLevel;
+        this.critical = critical;
+        this.predictedDamage = predictedDamage;
+        this.error = error;
     }
 }
 
@@ -143,14 +161,32 @@ final class RemoteProtectionSample {
     final int armorPoints;
     final double observedDamage;
     final int guessedLevel;
+    final String armorLabel;
+    final String swordLabel;
+    final int sharpnessLevel;
+    final boolean critical;
+    final double predictedDamage;
+    final double error;
 
     RemoteProtectionSample(String team, double rawDamage, int armorPoints,
                            double observedDamage, int guessedLevel) {
+        this(team, rawDamage, armorPoints, observedDamage, guessedLevel, "", "", 0, false, 0.0D, 0.0D);
+    }
+
+    RemoteProtectionSample(String team, double rawDamage, int armorPoints,
+                           double observedDamage, int guessedLevel, String armorLabel, String swordLabel,
+                           int sharpnessLevel, boolean critical, double predictedDamage, double error) {
         this.team = team;
         this.rawDamage = rawDamage;
         this.armorPoints = armorPoints;
         this.observedDamage = observedDamage;
         this.guessedLevel = guessedLevel;
+        this.armorLabel = armorLabel == null ? "" : armorLabel;
+        this.swordLabel = swordLabel == null ? "" : swordLabel;
+        this.sharpnessLevel = sharpnessLevel;
+        this.critical = critical;
+        this.predictedDamage = predictedDamage;
+        this.error = error;
     }
 
     // 中文注释：服务端返回的是一行 JSON，这里只解析保护共享需要的字段。
@@ -164,7 +200,13 @@ final class RemoteProtectionSample {
                 JsonMini.readNumber(json, "rawDamage", 0.0D),
                 (int) JsonMini.readNumber(json, "armorPoints", 0.0D),
                 JsonMini.readNumber(json, "observedDamage", 0.0D),
-                guessedLevel);
+                guessedLevel,
+                JsonMini.readString(json, "armorLabel"),
+                JsonMini.readString(json, "swordLabel"),
+                (int) JsonMini.readNumber(json, "sharpnessLevel", 0.0D),
+                JsonMini.readBoolean(json, "critical", false),
+                JsonMini.readNumber(json, "predictedDamage", 0.0D),
+                JsonMini.readNumber(json, "error", 0.0D));
     }
 }
 
@@ -188,23 +230,30 @@ final class HypixelStatsEntry {
     final long timestamp;
     final int stars;
     final long kills;
+    final long bedsBroken;
     final double kd;
 
-    HypixelStatsEntry(String uuid, String name, long timestamp, int stars, long kills, double kd) {
+    HypixelStatsEntry(String uuid, String name, long timestamp, int stars, long kills, long bedsBroken, double kd) {
         this.uuid = uuid;
         this.name = name;
         this.timestamp = timestamp;
         this.stars = stars;
         this.kills = kills;
+        this.bedsBroken = bedsBroken;
         this.kd = kd;
     }
 
     HypixelStatsEntry withName(String newName) {
-        return new HypixelStatsEntry(uuid, newName, timestamp, stars, kills, kd);
+        return new HypixelStatsEntry(uuid, newName, timestamp, stars, kills, bedsBroken, kd);
+    }
+
+    boolean isProbablyNick() {
+        return stars == 0 && kills == 0L && bedsBroken == 0L && Math.abs(kd) < 0.0001D;
     }
 
     String toCache() {
-        return timestamp + "|" + name + "|" + stars + "|" + kills + "|" + String.format(java.util.Locale.US, "%.2f", kd);
+        return timestamp + "|" + name + "|" + stars + "|" + kills + "|" + bedsBroken + "|"
+                + String.format(java.util.Locale.US, "%.2f", kd);
     }
 
     static HypixelStatsEntry fromCache(String uuid, String value) {
@@ -216,8 +265,11 @@ final class HypixelStatsEntry {
             return null;
         }
         try {
+            // 兼容旧缓存：老版本没有保存拆床数。
+            long bedsBroken = parts.length >= 6 ? Long.parseLong(parts[4]) : 0L;
+            double kd = Double.parseDouble(parts.length >= 6 ? parts[5] : parts[4]);
             return new HypixelStatsEntry(uuid, parts[1], Long.parseLong(parts[0]),
-                    Integer.parseInt(parts[2]), Long.parseLong(parts[3]), Double.parseDouble(parts[4]));
+                    Integer.parseInt(parts[2]), Long.parseLong(parts[3]), bedsBroken, kd);
         } catch (NumberFormatException ignored) {
             return null;
         }
@@ -324,5 +376,28 @@ final class JsonMini {
             }
         }
         return "";
+    }
+
+    static boolean readBoolean(String json, String field, boolean fallback) {
+        String needle = "\"" + field + "\"";
+        int index = json.indexOf(needle);
+        if (index < 0) {
+            return fallback;
+        }
+        int colon = json.indexOf(':', index + needle.length());
+        if (colon < 0) {
+            return fallback;
+        }
+        int start = colon + 1;
+        while (start < json.length() && Character.isWhitespace(json.charAt(start))) {
+            start++;
+        }
+        if (json.regionMatches(true, start, "true", 0, 4)) {
+            return true;
+        }
+        if (json.regionMatches(true, start, "false", 0, 5)) {
+            return false;
+        }
+        return fallback;
     }
 }

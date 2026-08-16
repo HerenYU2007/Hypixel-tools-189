@@ -27,7 +27,7 @@ if (!(Test-Path $launchwrapper)) {
     throw "LaunchWrapper 1.12 was not found at $launchwrapper"
 }
 
-$buildDir = Join-Path $root 'build\agent'
+$buildDir = Join-Path $root 'build\fireball_invis_agent'
 $classesDir = Join-Path $buildDir 'classes'
 $manifest = Join-Path $buildDir 'MANIFEST.MF'
 $sourcesList = Join-Path $buildDir 'sources.txt'
@@ -83,7 +83,10 @@ foreach ($classFile in $classFiles) {
     $text = $latin1.GetString($bytes)
     $text = $text.Replace('org/objectweb/asm', 'fbp/objectweb/asm')
     $text = $text.Replace('org.objectweb.asm', 'fbp.objectweb.asm')
-    [IO.File]::WriteAllBytes($classFile.FullName, $latin1.GetBytes($text))
+    $newBytes = $latin1.GetBytes($text)
+    if ($newBytes.Length -ne $bytes.Length -or -not [Linq.Enumerable]::SequenceEqual($bytes, $newBytes)) {
+        [IO.File]::WriteAllBytes($classFile.FullName, $newBytes)
+    }
 }
 
 @'
