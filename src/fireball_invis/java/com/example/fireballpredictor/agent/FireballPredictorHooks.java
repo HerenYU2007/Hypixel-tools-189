@@ -43,8 +43,8 @@ public final class FireballPredictorHooks {
     private static final int PROTECTION_SCAN_INTERVAL_TICKS = 10;
     private static final int PROTECTION_DEBUG_INTERVAL_TICKS = 100;
     private static final int PROTECTION_ZERO_LOCK_TICKS_AFTER_BED = 1800;
-    private static final int PROTECTION_TWO_ECONOMY_TICKS_AFTER_BED = 5200;
-    private static final int PROTECTION_THREE_ECONOMY_TICKS_AFTER_BED = 10800;
+    private static final int PROTECTION_TWO_ECONOMY_TICKS_AFTER_BED = 3000;
+    private static final int PROTECTION_THREE_ECONOMY_TICKS_AFTER_BED = 7800;
     private static final int INVIS_WARNING_TICKS = 200;
     private static final int INVIS_ALERT_MAX_DISTANCE = 50;
     private static final int HOME_SCAN_INTERVAL_TICKS = 20;

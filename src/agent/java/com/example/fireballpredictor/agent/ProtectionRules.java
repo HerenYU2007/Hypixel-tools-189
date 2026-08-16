@@ -17,6 +17,14 @@ final class ProtectionRules {
         if (probe.critical) {
             return null;
         }
+        ProtectionGuess sharpOneThreeGuess = inferSharpnessOneProtectionThreeRule(probe, observedDamage, lateLevelThreeWindow);
+        if (sharpOneThreeGuess != null) {
+            return sharpOneThreeGuess;
+        }
+        ProtectionGuess sharpOneTwoGuess = inferSharpnessOneProtectionTwoRule(probe, observedDamage, levelTwoWindow);
+        if (sharpOneTwoGuess != null) {
+            return sharpOneTwoGuess;
+        }
         ProtectionGuess sharpOneOneGuess = inferSharpnessOneProtectionOneRule(probe, observedDamage);
         if (sharpOneOneGuess != null) {
             return sharpOneOneGuess;
@@ -341,6 +349,126 @@ final class ProtectionRules {
         }
         double center = (range.low + range.high) / 2.0D;
         return new ProtectionGuess(1, center, Math.abs(observedDamage - center) * 0.05D);
+    }
+
+    private static ProtectionGuess inferSharpnessOneProtectionThreeRule(DamageProbe probe, double observedDamage,
+                                                                        boolean lateLevelThreeWindow) {
+        if (!lateLevelThreeWindow || probe.sword.sharpnessLevel != 1 || probe.critical || observedDamage < 0.25D) {
+            return null;
+        }
+        String sword = normalizedSword(probe.sword.label);
+        DamageRange range = sharpnessOneProtectionThreeMeasuredRange(probe.armor.label, sword);
+        if (range == null || observedDamage < range.low || observedDamage > range.high) {
+            return null;
+        }
+        double center = (range.low + range.high) / 2.0D;
+        return new ProtectionGuess(3, center, Math.abs(observedDamage - center) * 0.05D);
+    }
+
+    private static DamageRange sharpnessOneProtectionThreeMeasuredRange(String armor, String sword) {
+        if ("leather".equals(armor)) {
+            if ("wood_sword".equals(sword)) {
+                return new DamageRange(0.85D, 3.45D);
+            }
+            if ("stone_sword".equals(sword)) {
+                return new DamageRange(2.65D, 4.05D);
+            }
+            if ("iron_sword".equals(sword)) {
+                return new DamageRange(3.25D, 4.55D);
+            }
+            if ("diamond_sword".equals(sword)) {
+                return new DamageRange(3.45D, 4.55D);
+            }
+        }
+        if ("iron".equals(armor)) {
+            if ("wood_sword".equals(sword)) {
+                return new DamageRange(0.75D, 2.75D);
+            }
+            if ("stone_sword".equals(sword)) {
+                return new DamageRange(1.05D, 2.95D);
+            }
+            if ("iron_sword".equals(sword)) {
+                return new DamageRange(2.35D, 3.35D);
+            }
+            if ("diamond_sword".equals(sword)) {
+                return new DamageRange(2.65D, 3.75D);
+            }
+        }
+        if ("diamond".equals(armor)) {
+            if ("wood_sword".equals(sword)) {
+                return new DamageRange(0.95D, 2.35D);
+            }
+            if ("stone_sword".equals(sword)) {
+                return new DamageRange(1.35D, 2.65D);
+            }
+            if ("iron_sword".equals(sword)) {
+                return new DamageRange(1.05D, 3.05D);
+            }
+            if ("diamond_sword".equals(sword)) {
+                return new DamageRange(0.25D, 3.45D);
+            }
+        }
+        return null;
+    }
+
+    private static ProtectionGuess inferSharpnessOneProtectionTwoRule(DamageProbe probe, double observedDamage,
+                                                                      boolean levelTwoWindow) {
+        if (!levelTwoWindow || probe.sword.sharpnessLevel != 1 || probe.critical || observedDamage < 1.0D) {
+            return null;
+        }
+        String sword = normalizedSword(probe.sword.label);
+        DamageRange range = sharpnessOneProtectionTwoMeasuredRange(probe.armor.label, sword);
+        if (range == null || observedDamage < range.low || observedDamage > range.high) {
+            return null;
+        }
+        double center = (range.low + range.high) / 2.0D;
+        return new ProtectionGuess(2, center, Math.abs(observedDamage - center) * 0.05D);
+    }
+
+    private static DamageRange sharpnessOneProtectionTwoMeasuredRange(String armor, String sword) {
+        if ("leather".equals(armor)) {
+            if ("wood_sword".equals(sword)) {
+                return new DamageRange(2.50D, 3.90D);
+            }
+            if ("stone_sword".equals(sword)) {
+                return new DamageRange(3.45D, 4.90D);
+            }
+            if ("iron_sword".equals(sword)) {
+                return new DamageRange(3.95D, 5.60D);
+            }
+            if ("diamond_sword".equals(sword)) {
+                return new DamageRange(4.45D, 5.70D);
+            }
+        }
+        if ("iron".equals(armor)) {
+            if ("wood_sword".equals(sword)) {
+                return new DamageRange(1.65D, 3.05D);
+            }
+            if ("stone_sword".equals(sword)) {
+                return new DamageRange(2.00D, 3.50D);
+            }
+            if ("iron_sword".equals(sword)) {
+                return new DamageRange(2.00D, 4.05D);
+            }
+            if ("diamond_sword".equals(sword)) {
+                return new DamageRange(2.45D, 4.50D);
+            }
+        }
+        if ("diamond".equals(armor)) {
+            if ("wood_sword".equals(sword)) {
+                return new DamageRange(1.10D, 2.60D);
+            }
+            if ("stone_sword".equals(sword)) {
+                return new DamageRange(2.30D, 3.05D);
+            }
+            if ("iron_sword".equals(sword)) {
+                return new DamageRange(2.60D, 3.45D);
+            }
+            if ("diamond_sword".equals(sword)) {
+                return new DamageRange(2.55D, 3.85D);
+            }
+        }
+        return null;
     }
 
     private static DamageRange sharpnessOneProtectionOneMeasuredRange(String armor, String sword) {
